@@ -233,7 +233,7 @@ class HAConfig:
     intellidb_user: str = "intellidb"
     intellidb_db: str = "intellidb"
     intellidb_password: str = "IDBE@2025"
-    intellidb_bin_dir: str = "/opt/intellidb/17/bin"
+    intellidb_bin_dir: str = "/usr/pgsql-17/bin"
     intellidb_data_dir: str = "/var/lib/intellidb/data"
 
 

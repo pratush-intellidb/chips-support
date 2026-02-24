@@ -6,31 +6,43 @@ Menu-driven Python 3 tool for PostgreSQL 17 High Availability on RHEL 9 using **
 
 ---
 
-## Quick configuration steps
+## Quick setup notes
 
-| Step | Action |
-|------|--------|
-| 1 | Copy project (including `rpms/`) to each of 3 RHEL 9 nodes. |
-| 2 | `cp config.example.yaml config.yaml` — set `etcd_ips`, `current_node`, `current_node_ip` **per node**; set passwords or leave empty to be prompted. |
-| 3 | `sudo python3 pg_ha_setup.py` (or `sudo python3 pg_ha_setup.py --config config.yaml`). |
-| 4 | Menu: **1** Validate → **2** Open firewall ports → **3** Install packages. |
-| 5 | Menu: **4** Configure etcd → **5** Install PostgreSQL 17 (skip if IntelliDB only) → **7** Configure Patroni (choose **y** for IntelliDB mode if using port 5555) → **8** HAProxy → **9** SELinux → **10** Initialize cluster. |
-| 6 | Repeat steps 2–5 on the other two nodes (same `config.yaml`, different `current_node` / `current_node_ip`). |
-| 7 | Connect apps to HAProxy: `<haproxy_ip>:5000` (or your `haproxy_port`). |
+### Before you start
 
-**IntelliDB Enterprise (already installed on 3 nodes, port 5555):** Set in `config.yaml`: `use_intellidb: true`, and optionally `intellidb_port: 5555`, `intellidb_user: intellidb`, `intellidb_password: "IDBE@2025"`, `intellidb_data_dir`, `intellidb_bin_dir`. At step 5, choose **7** and answer **y** when asked for IntelliDB mode. Stop existing IntelliDB on each node before initializing Patroni.
+- **3 nodes** on RHEL 9 (or Rocky/AlmaLinux 9), with root/sudo.
+- Project directory on each node (include **`rpms/`** if offline).
+- Same **`config.yaml`** on all nodes; only **`current_node`** and **`current_node_ip`** differ per node.
 
----
+### Standard PostgreSQL 17 (port 5432)
 
-## Ready to run (offline)
+| Step | What to do |
+|------|------------|
+| 1 | On **each node**: copy project to server (e.g. `/opt/intellidb-ha/`). Include `rpms/` if offline. |
+| 2 | `cp config.example.yaml config.yaml`. Edit **per node**: `current_node` (e.g. node1), `current_node_ip` (e.g. 192.168.1.11). Set `etcd_ips` for all 3 nodes once. Passwords: set or leave `""` to be prompted. |
+| 3 | Run `sudo python3 pg_ha_setup.py --config config.yaml` (or without `--config` to use defaults). |
+| 4 | **1** Validate → **2** Open firewall ports → **3** Install packages. |
+| 5 | **4** Configure etcd → **5** Install PostgreSQL 17 → **7** Configure Patroni (answer **n** for IntelliDB) → **8** HAProxy → **9** SELinux → **10** Initialize cluster. |
+| 6 | Repeat steps 2–5 on the other two nodes (change `current_node` / `current_node_ip` only). |
+| 7 | Connect applications to **`<haproxy_ip>:5000`** (or your `haproxy_port`). |
 
-- Ensure **`rpms/`** is populated (RPMs + etcd tarball + patroni-wheels). Use Docker to build it once (see **Downloading RPMs** below).
-- On each server: run `sudo python3 pg_ha_setup.py` from the project directory. Menu **3** installs from `./rpms/` (no internet).
+### IntelliDB Enterprise (port 5555)
+
+- In **`config.yaml`**: set **`use_intellidb: true`**. Defaults: port **5555**, user **intellidb**, database **intellidb**, password **IDBE@2025**, data dir **/var/lib/intellidb/data**, bin dir **/usr/pgsql-17/bin** (override in YAML if your install differs).
+- **Stop** existing IntelliDB on each node before running the HA setup: `systemctl stop intellidb`.
+- Follow the same steps as above, but at step 5: skip **5** (Install PostgreSQL 17); at **7** (Patroni) answer **y** for IntelliDB mode.
+- After HA is up, applications connect to HAProxy (e.g. `<haproxy_ip>:5000`); HAProxy routes to IntelliDB on port 5555 on the leader.
+
+### Offline (no internet on servers)
+
+- Build **`rpms/`** once using Docker (see **Downloading RPMs**). Copy the full project (including `rpms/`) to each node.
+- Menu **3** installs from `./rpms/` (RPMs + etcd tarball + Patroni wheels). No internet needed on the servers.
 
 ---
 
 ## Table of Contents
 
+- [Quick setup notes](#quick-setup-notes)
 - [Requirements](#requirements)
 - [Quick Start](#quick-start)
 - [Network Ports](#network-ports)
@@ -101,6 +113,7 @@ sudo python3 pg_ha_setup.py --config config.yaml
 
 For existing **IntelliDB Enterprise** (PostgreSQL 17 on port **5555**, user **intellidb**, database **intellidb**, password **IDBE@2025**):
 
+- **Default paths** (per IntelliDB Enterprise reference): **Data directory** `/var/lib/intellidb/data`, **bin directory** `/usr/pgsql-17/bin`. Override in `config.yaml` if your install differs.
 - In `config.yaml`: set `use_intellidb: true`. Optionally override `intellidb_port`, `intellidb_user`, `intellidb_password`, `intellidb_data_dir`, `intellidb_bin_dir`.
 - When running menu **7** (Configure Patroni), answer **y** to “Use IntelliDB Enterprise mode” (or rely on YAML).
 - Patroni and HAProxy will use port 5555 and the IntelliDB superuser. Stop any existing IntelliDB service on each node before initializing the cluster.
