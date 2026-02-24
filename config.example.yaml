@@ -39,5 +39,15 @@ read_replica_port: 7000
 # Enable TLS for PostgreSQL (use with option 17 to generate self-signed certs)
 enable_tls: false
 
+# IntelliDB Enterprise (existing PostgreSQL 17 on port 5555)
+# Set use_intellidb: true when using IntelliDB; then choose "y" at Patroni (menu 7).
+use_intellidb: false
+intellidb_port: 5555
+intellidb_user: intellidb
+intellidb_db: intellidb
+intellidb_password: "IDBE@2025"
+# intellidb_bin_dir: "/opt/intellidb/17/bin"
+# intellidb_data_dir: "/var/lib/intellidb/data"
+
 # Optional: set to true to simulate without making changes (same as --dry-run)
 # dry_run: false

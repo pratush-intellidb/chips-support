@@ -1,8 +1,31 @@
 # IntelliDB PostgreSQL HA Setup on RHEL 9
 
-Production-grade, menu-driven Python 3 console application that automates PostgreSQL 17 High Availability setup on RHEL 9 using **Patroni**, **etcd**, **HAProxy**, **firewalld**, **SELinux**, and **systemd**.
+Menu-driven Python 3 tool for PostgreSQL 17 High Availability on RHEL 9 using **Patroni**, **etcd**, **HAProxy**, **firewalld**, **SELinux**, and **systemd**. Supports standard PostgreSQL 17 (port 5432) and **IntelliDB Enterprise** (port 5555, user `intellidb`, database `intellidb`).
 
 **Version:** 1.0.0
+
+---
+
+## Quick configuration steps
+
+| Step | Action |
+|------|--------|
+| 1 | Copy project (including `rpms/`) to each of 3 RHEL 9 nodes. |
+| 2 | `cp config.example.yaml config.yaml` — set `etcd_ips`, `current_node`, `current_node_ip` **per node**; set passwords or leave empty to be prompted. |
+| 3 | `sudo python3 pg_ha_setup.py` (or `sudo python3 pg_ha_setup.py --config config.yaml`). |
+| 4 | Menu: **1** Validate → **2** Open firewall ports → **3** Install packages. |
+| 5 | Menu: **4** Configure etcd → **5** Install PostgreSQL 17 (skip if IntelliDB only) → **7** Configure Patroni (choose **y** for IntelliDB mode if using port 5555) → **8** HAProxy → **9** SELinux → **10** Initialize cluster. |
+| 6 | Repeat steps 2–5 on the other two nodes (same `config.yaml`, different `current_node` / `current_node_ip`). |
+| 7 | Connect apps to HAProxy: `<haproxy_ip>:5000` (or your `haproxy_port`). |
+
+**IntelliDB Enterprise (already installed on 3 nodes, port 5555):** Set in `config.yaml`: `use_intellidb: true`, and optionally `intellidb_port: 5555`, `intellidb_user: intellidb`, `intellidb_password: "IDBE@2025"`, `intellidb_data_dir`, `intellidb_bin_dir`. At step 5, choose **7** and answer **y** when asked for IntelliDB mode. Stop existing IntelliDB on each node before initializing Patroni.
+
+---
+
+## Ready to run (offline)
+
+- Ensure **`rpms/`** is populated (RPMs + etcd tarball + patroni-wheels). Use Docker to build it once (see **Downloading RPMs** below).
+- On each server: run `sudo python3 pg_ha_setup.py` from the project directory. Menu **3** installs from `./rpms/` (no internet).
 
 ---
 
@@ -12,6 +35,8 @@ Production-grade, menu-driven Python 3 console application that automates Postgr
 - [Quick Start](#quick-start)
 - [Network Ports](#network-ports)
 - [Configuration](#configuration)
+- [IntelliDB Enterprise](#intellidb-enterprise)
+- [Downloading RPMs (Docker)](#downloading-rpms-docker)
 - [Command-Line Options](#command-line-options)
 - [Menu Reference](#menu-reference)
 - [Logging and Troubleshooting](#logging-and-troubleshooting)
@@ -22,108 +47,85 @@ Production-grade, menu-driven Python 3 console application that automates Postgr
 
 ## Requirements
 
-- **OS:** RHEL 9 (or compatible: Rocky Linux 9, AlmaLinux 9, CentOS Stream 9)
-- **Privileges:** Root (sudo) for installation and configuration
-- **Python:** 3.6 or later (stdlib only; PyYAML optional for config file)
-- **Network:** Connectivity between 3 etcd nodes on ports 2379, 2380
-- **Prerequisites:** firewalld, systemd (default on RHEL 9)
-- **Offline/air‑gapped:** All required RPMs must be available from local/internal yum repos
-  (the script never downloads from the public internet).
+- **OS:** RHEL 9 or compatible (Rocky Linux 9, AlmaLinux 9, CentOS Stream 9)
+- **Root** (sudo) for install and config
+- **Python:** 3.6+ (stdlib; PyYAML optional for `--config`)
+- **Network:** 3 nodes reachable on 2379, 2380 (etcd)
+- **Offline:** Use pre-built `rpms/`; script does not download from the internet
 
 ---
 
 ## Quick Start
 
 ```bash
-# Optional: install PyYAML for YAML config file support
-pip3 install pyyaml
-# or: sudo dnf install python3-pyyaml
-
-# Run as root
 sudo python3 pg_ha_setup.py
+# Or with config file:
+sudo python3 pg_ha_setup.py --config config.yaml
 ```
 
-Recommended first steps from the menu:
-
-1. **Validate System Requirements** – confirm OS, root, firewalld, ports.
-2. **Show Required Ports & Open Firewall Ports** – review ports and open them.
-3. Proceed with **Install Required Packages** and subsequent steps.
+Recommended menu order: **1** → **2** → **3** → **4** → **7** → **8** → **9** → **10**.
 
 ---
 
 ## Network Ports
 
-| Port | Service            | Purpose                          | Exposure        |
-|------|--------------------|----------------------------------|-----------------|
-| 5432 | PostgreSQL         | Client connections               | Internal only   |
-| 8008 | Patroni REST API   | Health checks, leader detection  | Cluster only    |
-| 2379 | etcd client        | DCS communication               | Cluster only    |
-| 2380 | etcd peer          | etcd replication                 | Cluster only    |
-| 5000 | HAProxy            | Frontend (configurable)          | App tier        |
-| 7000 | Read replica       | Optional (configurable)         | Internal/optional |
+| Port | Service | Purpose |
+|------|---------|---------|
+| 5432 | PostgreSQL | Client connections (standard) |
+| 5555 | IntelliDB | Client connections (IntelliDB Enterprise) |
+| 8008 | Patroni REST | Health checks, leader detection |
+| 2379 | etcd client | DCS communication |
+| 2380 | etcd peer | etcd replication |
+| 5000 | HAProxy | Frontend (configurable) |
+| 7000 | Read replica | Optional |
 
-Use menu option **2** to see full port documentation and open/verify firewall ports.
+Use menu **2** to view details and open firewall ports.
 
 ---
 
 ## Configuration
 
-Use `config.example.yaml` as a template. Copy and customize for your environment:
-
 ```bash
 cp config.example.yaml config.yaml
-# Edit config.yaml: set etcd_ips, current_node, current_node_ip, passwords
+# Edit: etcd_ips, current_node, current_node_ip; passwords (or leave "" to be prompted)
 sudo python3 pg_ha_setup.py --config config.yaml
 ```
 
-- **Per-node:** Set `current_node` and `current_node_ip` for each host (e.g. node1/node2/node3).
-- **Passwords:** Leave `replication_password` and `postgres_password` empty to be prompted (masked) at runtime.
-- **Do not commit** `config.yaml` with real passwords to version control.
+- **Per node:** Set `current_node` and `current_node_ip` for that host (e.g. node1/node2/node3).
+- **Passwords:** Empty `""` = prompt at runtime (masked).
+- Do not commit `config.yaml` with real passwords.
 
 ---
 
-## Downloading RPMs for offline install (Docker)
+## IntelliDB Enterprise
 
-On RHEL 9 / Rocky Linux 9, **etcd** and **patroni** are in **EPEL**, not the base repos. Enable EPEL first, then download.
+For existing **IntelliDB Enterprise** (PostgreSQL 17 on port **5555**, user **intellidb**, database **intellidb**, password **IDBE@2025**):
 
-**Option A – Use the provided script (recommended)**
+- In `config.yaml`: set `use_intellidb: true`. Optionally override `intellidb_port`, `intellidb_user`, `intellidb_password`, `intellidb_data_dir`, `intellidb_bin_dir`.
+- When running menu **7** (Configure Patroni), answer **y** to “Use IntelliDB Enterprise mode” (or rely on YAML).
+- Patroni and HAProxy will use port 5555 and the IntelliDB superuser. Stop any existing IntelliDB service on each node before initializing the cluster.
 
-From your project directory (e.g. `C:\Feb-2026\HA-Setup-PgSQL-RHEL9`):
+---
+
+## Downloading RPMs (Docker)
+
+etcd and Patroni are not in EPEL for EL9. Build `rpms/` once with Docker:
 
 **PowerShell (Windows):**
 ```powershell
-cd C:\Feb-2026\HA-Setup-PgSQL-RHEL9
 docker pull rockylinux:9
-docker run --rm -it -v "${PWD}:/mnt/host" rockylinux:9 bash -c "dnf -y install epel-release; dnf -y update; dnf -y install dnf-plugins-core; dnf -y install https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm; dnf -qy module disable postgresql; mkdir -p /mnt/host/rpms && cd /mnt/host/rpms && dnf -y download postgresql17-server postgresql17-contrib patroni etcd haproxy firewalld python3-psycopg2 python3-pyyaml; ls -la"
+docker run --rm -v "${PWD}:/mnt/host" rockylinux:9 bash /mnt/host/scripts/download-rpms-in-docker.sh
 ```
 
 **Bash (Linux/macOS):**
 ```bash
 docker pull rockylinux:9
-docker run --rm -it -v "$(pwd):/mnt/host" rockylinux:9 bash -c "
-  dnf -y install epel-release
-  dnf -y update
-  dnf -y install dnf-plugins-core
-  dnf -y install https://download.postgresql.org/pub/repos/yum/reporpms/EL-9-x86_64/pgdg-redhat-repo-latest.noarch.rpm
-  dnf -qy module disable postgresql
-  mkdir -p /mnt/host/rpms && cd /mnt/host/rpms
-  dnf -y download postgresql17-server postgresql17-contrib patroni etcd haproxy firewalld python3-psycopg2 python3-pyyaml
-  ls -la
-"
+docker run --rm -v "$(pwd):/mnt/host" rockylinux:9 bash /mnt/host/scripts/download-rpms-in-docker.sh
 ```
 
-RPMs will appear in `.\rpms` (or `./rpms` on Linux).
+This fills `rpms/` with RPMs, etcd tarball, and Patroni wheels. Copy the project to servers and run the setup (see **Quick configuration steps**).
 
-**Option B – Run script interactively**
-
-```powershell
-docker run --rm -it -v "C:\Feb-2026\HA-Setup-PgSQL-RHEL9:/mnt/host" rockylinux:9 /bin/bash
-# Inside container:
-bash /mnt/host/scripts/download-rpms-in-docker.sh
-exit
-```
-
-**Fix for "No package etcd available":** install **EPEL** before the download step (`dnf -y install epel-release`). The commands above do that.
+Manual steps: **`rpms/README-OFFLINE.md`**.
 
 ---
 
@@ -131,18 +133,10 @@ exit
 
 | Option | Description |
 |--------|-------------|
-| `--config`, `-c` | Path to YAML configuration file |
-| `--dry-run` | Simulate actions without making changes |
-| `--non-interactive` | With `--config`: run validation and port/firewall menu only |
+| `--config`, `-c` | YAML config file path |
+| `--dry-run` | Simulate; no changes |
+| `--non-interactive` | With `--config`: validation and port menu only |
 | `--version`, `-v` | Print version and exit |
-
-Examples:
-
-```bash
-sudo python3 pg_ha_setup.py --config /etc/pg_ha_setup/config.yaml
-sudo python3 pg_ha_setup.py --dry-run
-sudo python3 pg_ha_setup.py --version
-```
 
 ---
 
@@ -156,7 +150,7 @@ sudo python3 pg_ha_setup.py --version
 | 4 | Configure etcd Cluster |
 | 5 | Install PostgreSQL 17 |
 | 6 | Configure PostgreSQL Replication |
-| 7 | Install & Configure Patroni |
+| 7 | Install & Configure Patroni (IntelliDB mode prompt) |
 | 8 | Configure HAProxy |
 | 9 | Configure SELinux Policies |
 | 10 | Initialize Cluster |
@@ -173,30 +167,23 @@ sudo python3 pg_ha_setup.py --version
 
 ## Logging and Troubleshooting
 
-- **Log file:** `/var/log/pg_ha_setup.log` (created when run as root).
-- **HAProxy:** Config is validated with `haproxy -c -f ...` before reload; errors are shown and reload is skipped on failure.
-- **SELinux:** If `restorecon` is not found (e.g. minimal install), SELinux step is skipped with a warning. For AVC denials: `ausearch -m avc -ts recent`.
-- **Patroni/etcd:** If packages are not in default repos, install from your vendor’s repository or follow Patroni/etcd upstream docs for RHEL 9.
-- **Offline environments:** Pre-stage or mirror all required RPMs (`postgresql17-*`, `patroni`,
-  `etcd`, `haproxy`, `firewalld`, `python3-psycopg2`, `python3-pyyaml`) into your internal
-  repositories. The `Install Required Packages` step only uses `dnf` against existing repos.
+- **Log file:** `/var/log/pg_ha_setup.log`
+- **HAProxy:** Config validated before reload; errors printed if invalid.
+- **SELinux:** `restorecon` skipped with warning if missing; AVC: `ausearch -m avc -ts recent`
+- **Offline:** Use `rpms/`; menu **3** installs from there. See `rpms/README-OFFLINE.md`.
 
 ---
 
 ## Security
 
-- Restrict **pg_hba.conf** to application CIDR in production (avoid 0.0.0.0/0).
-- Bind services to **private IPs** where possible.
-- Use **TLS** for PostgreSQL in production (menu option 17 for self-signed).
-- Consider **etcd peer/client TLS** for the etcd cluster.
-- **Patroni config** (`/etc/patroni/patroni.yml`) is written with mode 0600; it contains passwords.
+- Restrict **pg_hba.conf** by CIDR (avoid 0.0.0.0/0).
+- Bind services to **private IPs**.
+- Use **TLS** in production (menu **17** for self-signed).
+- Consider **etcd** peer/client TLS.
+- **Patroni** config file is chmod 0600 (contains passwords).
 
 ---
 
 ## Support
 
-For product support, contact your vendor or refer to your organization’s support process. Ensure you provide:
-
-- Output of **Validate System Requirements** (menu 1).
-- Relevant lines from `/var/log/pg_ha_setup.log`.
-- OS and version (`cat /etc/os-release`).
+Provide: menu **1** output, `/var/log/pg_ha_setup.log` excerpts, and `cat /etc/os-release`. Contact your vendor or internal support process.

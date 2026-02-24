@@ -18,6 +18,7 @@ import getpass
 import logging
 import os
 import re
+import shutil
 import socket
 import subprocess
 import sys
@@ -94,6 +95,14 @@ PORTS = {
         "external": "Internal or app tier only",
         "security": "Configurable; bind to private IP if used",
         "default_bind": "Configurable",
+    },
+    5555: {
+        "name": "IntelliDB PostgreSQL",
+        "purpose": "IntelliDB Enterprise customized PostgreSQL 17 port",
+        "internal": "Primary database access when using IntelliDB Enterprise",
+        "external": "Should NOT be exposed externally; use HAProxy instead",
+        "security": "Bind to private IP; restrict via pg_hba.conf CIDR",
+        "default_bind": "<intellidb_private_ip>",
     },
 }
 
@@ -217,6 +226,15 @@ class HAConfig:
     haproxy_bind: str = "0.0.0.0"
     enable_tls: bool = False
     dry_run: bool = False
+
+    # IntelliDB Enterprise (custom PostgreSQL 17) integration
+    use_intellidb: bool = False
+    intellidb_port: int = 5555
+    intellidb_user: str = "intellidb"
+    intellidb_db: str = "intellidb"
+    intellidb_password: str = "IDBE@2025"
+    intellidb_bin_dir: str = "/opt/intellidb/17/bin"
+    intellidb_data_dir: str = "/var/lib/intellidb/data"
 
 
 # -----------------------------------------------------------------------------
@@ -757,16 +775,21 @@ Firewall: Use --add-source for restricted access
                 print(Colors.warn(f"Local RPM install failed (continuing to repo-based install): {e}"))
 
         # 2) Fallback to package names from configured local/internal repos
+        rpms_dir = Path("rpms").resolve()
         packages = [
             "postgresql17-server",
             "postgresql17-contrib",
-            "patroni",
-            "etcd",
             "haproxy",
             "firewalld",
             "python3-pyyaml",
             "python3-psycopg2",
         ]
+        have_etcd_tarball = rpms_dir.is_dir() and list(rpms_dir.glob("etcd-v*-linux-amd64.tar.gz"))
+        have_patroni_wheels = (rpms_dir / "patroni-wheels").is_dir() and list((rpms_dir / "patroni-wheels").glob("patroni-*.whl"))
+        if not have_etcd_tarball:
+            packages.append("etcd")
+        if not have_patroni_wheels:
+            packages.append("patroni")
         cmd = ["dnf", "install", "-y"] + packages
         try:
             self._run_cmd(cmd, timeout=300)
@@ -775,10 +798,49 @@ Firewall: Use --add-source for restricted access
             print(Colors.fail(f"Installation failed: {e}"))
             print(
                 Colors.warn(
-                    "Ensure all required RPMs are present in local/yum repos or installed manually; "
+                    "Ensure all required RPMs are present in local/yum repos or in ./rpms/; "
                     "this setup does not download packages from the internet."
                 )
             )
+
+        # 3) Offline: install etcd from rpms/ tarball if present
+        if rpms_dir.is_dir():
+            etcd_tarballs = sorted(rpms_dir.glob("etcd-v*-linux-amd64.tar.gz"))
+            if etcd_tarballs and not self.config.dry_run:
+                tarball = etcd_tarballs[-1]
+                print(Colors.info(f"Installing etcd from {tarball.name}"))
+                try:
+                    self._run_cmd(["tar", "xzf", str(tarball), "-C", "/tmp"], timeout=30)
+                    extracted = list(Path("/tmp").glob("etcd-v*-linux-amd64"))
+                    if extracted:
+                        d = extracted[0]
+                        for name in ["etcd", "etcdctl"]:
+                            exe = d / name
+                            if exe.exists():
+                                self._run_cmd(["cp", str(exe), "/usr/local/bin/"])
+                                self._run_cmd(["chmod", "755", f"/usr/local/bin/{name}"])
+                        shutil.rmtree(str(d), ignore_errors=True)
+                        print(Colors.success("etcd binaries installed to /usr/local/bin"))
+                    else:
+                        print(Colors.warn("etcd tarball had unexpected layout"))
+                except Exception as e:
+                    logger.warning("etcd tarball install failed: %s", e)
+                    print(Colors.warn("etcd tarball install failed; install manually (see rpms/README-OFFLINE.md)"))
+
+            # 4) Offline: install Patroni from rpms/patroni-wheels if present
+            wheels_dir = rpms_dir / "patroni-wheels"
+            if wheels_dir.is_dir() and list(wheels_dir.glob("patroni-*.whl")):
+                print(Colors.info("Installing Patroni from rpms/patroni-wheels"))
+                try:
+                    self._run_cmd([
+                        "pip3", "install", "--no-index",
+                        f"--find-links={wheels_dir}",
+                        "patroni",
+                    ], timeout=120, check=False)
+                    print(Colors.success("Patroni installed from wheels"))
+                except Exception as e:
+                    logger.warning("Patroni wheels install failed: %s", e)
+                    print(Colors.warn("Patroni wheels install failed; run: pip3 install --no-index --find-links=./rpms/patroni-wheels patroni"))
 
     def configure_etcd(self) -> None:
         """Configure etcd cluster."""
@@ -810,16 +872,37 @@ ETCD_INITIAL_CLUSTER_STATE="new"
                 f.write(etcd_env)
         logger.info("Wrote %s", env_file)
 
-        # systemd override
-        override_dir = "/etc/systemd/system/etcd.service.d"
-        os.makedirs(override_dir, exist_ok=True)
-        override_content = f"""[Service]
+        # systemd: use override if etcd.service exists (from RPM), else create full unit (tarball install)
+        etcd_unit = "/etc/systemd/system/etcd.service"
+        if not self.config.dry_run:
+            if not os.path.exists(etcd_unit):
+                unit_content = """[Unit]
+Description=etcd - distributed key-value store for Patroni DCS
+After=network.target
+
+[Service]
+Type=notify
+EnvironmentFile=-/etc/etcd/etcd.conf
+ExecStart=/usr/local/bin/etcd
+Restart=on-failure
+RestartSec=10s
+LimitNOFILE=65536
+
+[Install]
+WantedBy=multi-user.target
+"""
+                with open(etcd_unit, "w") as f:
+                    f.write(unit_content)
+                logger.info("Created %s (etcd from tarball)", etcd_unit)
+            else:
+                override_dir = "/etc/systemd/system/etcd.service.d"
+                os.makedirs(override_dir, exist_ok=True)
+                override_content = f"""[Service]
 EnvironmentFile={env_file}
 """
-        override_file = f"{override_dir}/environment.conf"
-        if not self.config.dry_run:
-            with open(override_file, "w") as f:
-                f.write(override_content)
+                override_file = f"{override_dir}/environment.conf"
+                with open(override_file, "w") as f:
+                    f.write(override_content)
             self._run_cmd(["systemctl", "daemon-reload"])
             self._run_cmd(["systemctl", "enable", "etcd"])
             self._run_cmd(["systemctl", "start", "etcd"])
@@ -861,16 +944,44 @@ EnvironmentFile={env_file}
         if not self._require_root():
             return
         print(Colors.header("\n=== Configuring Patroni ===\n"))
+
+        # Allow selecting IntelliDB Enterprise mode interactively if not set via YAML
+        if not self.config.use_intellidb:
+            try:
+                choice = input(
+                    "Use IntelliDB Enterprise mode (existing PostgreSQL 17 on port 5555, user 'intellidb')? [y/N]: "
+                ).strip().lower()
+            except EOFError:
+                choice = "n"
+            if choice == "y":
+                self.config.use_intellidb = True
+                print(Colors.info("IntelliDB Enterprise mode enabled for Patroni and HAProxy."))
+
         os.makedirs(PATRONI_CONFIG_DIR, exist_ok=True)
 
         if not self.config.replication_password:
             self.config.replication_password = self._prompt_password("Replication user password", "CHANGE_ME")
         if not self.config.postgres_password:
-            self.config.postgres_password = self._prompt_password("PostgreSQL superuser password", "CHANGE_ME")
+            # For IntelliDB mode, default to the known IntelliDB password
+            default_pw = self.config.intellidb_password if self.config.use_intellidb else "CHANGE_ME"
+            prompt = "IntelliDB superuser password" if self.config.use_intellidb else "PostgreSQL superuser password"
+            self.config.postgres_password = self._prompt_password(prompt, default_pw)
 
         etcd_hosts = ",".join(f"http://{ip}:2379" for ip in self.config.etcd_ips)
         repl_pass = self.config.replication_password or "CHANGE_ME"
         super_pass = self.config.postgres_password or "CHANGE_ME"
+
+        # Standard PostgreSQL vs IntelliDB mode
+        if self.config.use_intellidb:
+            db_port = self.config.intellidb_port
+            bin_dir = self.config.intellidb_bin_dir
+            data_dir = self.config.intellidb_data_dir
+            superuser_name = self.config.intellidb_user
+        else:
+            db_port = 5432
+            bin_dir = "/usr/pgsql-17/bin"
+            data_dir = POSTGRESQL_DATA_DIR
+            superuser_name = SUPERUSER
 
         patroni_yml = f"""# Patroni configuration for {self.config.cluster_name}
 scope: {self.config.cluster_name}
@@ -903,7 +1014,7 @@ bootstrap:
       password: {repl_pass}
       options:
         - replication
-    {SUPERUSER}:
+    {superuser_name}:
       password: {super_pass}
       options:
         - superuser
@@ -911,17 +1022,17 @@ bootstrap:
         - createrole
 
 postgresql:
-  listen: {self.config.current_node_ip}:5432
-  connect_address: {self.config.current_node_ip}:5432
-  data_dir: {POSTGRESQL_DATA_DIR}
-  bin_dir: /usr/pgsql-17/bin
+  listen: {self.config.current_node_ip}:{db_port}
+  connect_address: {self.config.current_node_ip}:{db_port}
+  data_dir: {data_dir}
+  bin_dir: {bin_dir}
   pgpass: /tmp/pgpass
   authentication:
     replication:
       username: {REPLICATION_USER}
       password: {repl_pass}
     superuser:
-      username: {SUPERUSER}
+      username: {superuser_name}
       password: {super_pass}
   parameters:
     max_connections: "200"
@@ -950,8 +1061,9 @@ postgresql:
             return
         print(Colors.header("\n=== Configuring HAProxy ===\n"))
 
+        db_port = self.config.intellidb_port if self.config.use_intellidb else 5432
         backends = "\n".join(
-            f"    server {n} {ip}:5432 check port 8008"
+            f"    server {n} {ip}:{db_port} check port 8008"
             for n, ip in zip(self.config.etcd_nodes, self.config.etcd_ips)
         )
 
