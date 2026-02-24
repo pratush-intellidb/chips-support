@@ -1,0 +1,43 @@
+# IntelliDB PostgreSQL HA Setup on RHEL 9 - Configuration Example
+#
+# Copy to config.yaml and customize for your environment.
+# Usage: sudo python3 pg_ha_setup.py --config config.yaml
+#
+# IMPORTANT: Do not commit config.yaml with real passwords to version control.
+
+# etcd cluster (exactly 3 nodes recommended for quorum)
+etcd_nodes:
+  - node1
+  - node2
+  - node3
+
+etcd_ips:
+  - 192.168.1.11
+  - 192.168.1.12
+  - 192.168.1.13
+
+# Current node identity - set per host when running on each node
+current_node: node1
+current_node_ip: 192.168.1.11
+
+# Cluster name (must match on all nodes)
+cluster_name: pg-cluster
+
+# Passwords - use strong passwords in production.
+# Leave empty ("") to be prompted interactively (masked input).
+replication_password: ""
+postgres_password: ""
+
+# HAProxy
+haproxy_port: 5000
+# Bind to specific IP for production, e.g. "192.168.1.10"
+haproxy_bind: "0.0.0.0"
+
+# Optional read replica port (when using port separation)
+read_replica_port: 7000
+
+# Enable TLS for PostgreSQL (use with option 17 to generate self-signed certs)
+enable_tls: false
+
+# Optional: set to true to simulate without making changes (same as --dry-run)
+# dry_run: false

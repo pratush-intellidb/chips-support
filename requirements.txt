@@ -1,0 +1,7 @@
+# IntelliDB PostgreSQL HA Setup on RHEL 9 - Python dependencies
+#
+# The application uses only Python standard library by default.
+# Install PyYAML only if you use a YAML config file (--config).
+
+# Required for --config / -c YAML configuration
+PyYAML>=5.4.0,<7.0
