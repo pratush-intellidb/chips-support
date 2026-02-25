@@ -1111,6 +1111,15 @@ postgresql:
         if not self._require_root():
             return
         print(Colors.header("\n=== Configuring HAProxy ===\n"))
+        print(
+            Colors.info(
+                "Tip: In a 3-node deployment with no separate HAProxy VM, "
+                "run menu option 8 (Configure HAProxy) on exactly one node "
+                "(for example node1) and skip option 8 on the other two nodes. "
+                "Applications should then connect only to that node's "
+                "haproxy_bind:haproxy_port."
+            )
+        )
 
         db_port = self.config.intellidb_port if self.config.use_intellidb else 5432
         backends = "\n".join(

@@ -26,6 +26,10 @@ Menu-driven Python 3 tool for PostgreSQL 17 High Availability on RHEL 9 using **
 | 6 | Repeat steps 2–5 on the other two nodes (change `current_node` / `current_node_ip` only). |
 | 7 | Connect applications to **`<haproxy_ip>:5000`** (or your `haproxy_port`). |
 
+**HAProxy node (3‑node setup, no extra VM):**  
+- Run menu option **8 – Configure HAProxy** on **exactly one node** (for example `node1`).  
+- On the other two nodes, you can **skip option 8**, so applications only connect to that node’s `haproxy_bind:haproxy_port` (for example `172.16.15.36:5000`).
+
 ### IntelliDB Enterprise (port 5555)
 
 - In **`config.yaml`**: set **`use_intellidb: true`**. Defaults: port **5555**, user **intellidb**, database **intellidb**, password **IDBE@2025**, data dir **/var/lib/intellidb/data**, bin dir **/usr/pgsql-17/bin** (override in YAML if your install differs).
