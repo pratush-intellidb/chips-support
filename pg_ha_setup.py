@@ -829,11 +829,17 @@ Firewall: Use --add-source for restricted access
                 )
             )
 
-        # 3) Offline: install etcd from rpms/ tarball if present
+        # 3) Offline: install etcd from rpms/ tarball if present.
+        # Prefer 3.5.x (has v2 API required by Patroni); etcd 3.6+ removed v2.
         if rpms_dir.is_dir():
             etcd_tarballs = sorted(rpms_dir.glob("etcd-v*-linux-amd64.tar.gz"))
             if etcd_tarballs and not self.config.dry_run:
-                tarball = etcd_tarballs[-1]
+                def _etcd_version_key(p: Path) -> tuple:
+                    name = p.stem.replace(".tar", "")
+                    m = re.search(r"etcd-v(\d+)\.(\d+)\.(\d+)", name)
+                    return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else (0, 0, 0)
+                v35 = [p for p in etcd_tarballs if _etcd_version_key(p)[1] == 5]
+                tarball = sorted(v35, key=_etcd_version_key)[-1] if v35 else etcd_tarballs[-1]
                 print(Colors.info(f"Installing etcd from {tarball.name}"))
                 try:
                     self._run_cmd(["tar", "xzf", str(tarball), "-C", "/tmp"], timeout=30)
@@ -952,10 +958,137 @@ EnvironmentFile={env_file}
                         "  journalctl -u etcd -n 50"
                     )
                 )
+                print(
+                    Colors.info(
+                        "If you downgraded from etcd 3.6 to 3.5 (for Patroni v2 API), clear the data dir on all nodes:\n"
+                        "  sudo systemctl stop etcd\n"
+                        "  sudo rm -rf /var/lib/etcd/*\n"
+                        "  sudo systemctl start etcd\n"
+                        "Or run menu option 19 (Fix etcd for Patroni)."
+                    )
+                )
             else:
                 print(Colors.success("etcd configured and service started. Repeat on all 3 nodes."))
         else:
             print(Colors.success("etcd configuration written (dry-run)."))
+
+    def fix_etcd_for_patroni(self) -> None:
+        """Fix etcd for Patroni: clear data (3.6->3.5 downgrade), install 3.5.x if needed, start etcd."""
+        if not self._require_root():
+            return
+        print(Colors.header("\n=== Fix etcd for Patroni (3.5.x + reset data) ===\n"))
+        print(
+            Colors.info(
+                "Patroni requires etcd v2 API; etcd 3.6+ removed it. "
+                "This option: stops etcd, optionally clears the data dir, installs 3.5.x from rpms/ if present, starts etcd."
+            )
+        )
+        if self.config.dry_run:
+            print(Colors.success("Dry-run: would stop etcd, prompt to clear data, install 3.5.x, start etcd."))
+            return
+
+        # Stop etcd
+        self._run_cmd(["systemctl", "stop", "etcd"], check=False)
+
+        # Resolve ETCD_DATA_DIR
+        data_dir = "/var/lib/etcd"
+        env_file = "/etc/etcd/etcd.conf"
+        if os.path.exists(env_file):
+            try:
+                with open(env_file, "r", encoding="utf-8") as f:
+                    for line in f:
+                        line = line.strip()
+                        if line.startswith("ETCD_DATA_DIR="):
+                            data_dir = line.split("=", 1)[1].strip().strip('"')
+                            break
+            except OSError as e:
+                logger.warning("Could not read %s: %s", env_file, e)
+        print(Colors.info(f"etcd data directory: {data_dir}"))
+
+        # Prompt to clear data
+        try:
+            ans = input(
+                f"Clear etcd data at {data_dir}? Required when downgrading 3.6->3.5. [y/N]: "
+            ).strip().lower()
+        except EOFError:
+            ans = "n"
+        if ans == "y":
+            if os.path.exists(data_dir):
+                for f in os.listdir(data_dir):
+                    path = os.path.join(data_dir, f)
+                    try:
+                        if os.path.isfile(path):
+                            os.unlink(path)
+                        else:
+                            shutil.rmtree(path, ignore_errors=True)
+                    except OSError as e:
+                        logger.warning("Could not remove %s: %s", path, e)
+                print(Colors.success(f"Cleared contents of {data_dir}"))
+            else:
+                os.makedirs(data_dir, exist_ok=True)
+                print(Colors.info(f"Created {data_dir}"))
+        else:
+            print(Colors.warn("Skipped clearing data. If etcd was 3.6, it may still fail to start."))
+
+        # Prefer 3.5.x tarball and install if found
+        def _etcd_version_key(p: Path) -> tuple:
+            m = re.search(r"etcd-v(\d+)\.(\d+)\.(\d+)", p.name)
+            return (int(m.group(1)), int(m.group(2)), int(m.group(3))) if m else (0, 0, 0)
+
+        for search_dir in [Path("rpms"), Path(".")]:
+            if not search_dir.is_dir():
+                continue
+            tarballs_35 = [p for p in search_dir.glob("etcd-v3.5*.tar.gz") if p.is_file()]
+            if not tarballs_35:
+                continue
+            tarball = sorted(tarballs_35, key=_etcd_version_key)[-1]
+            print(Colors.info(f"Installing etcd from {tarball}"))
+            try:
+                self._run_cmd(["tar", "xzf", str(tarball), "-C", "/tmp"], timeout=30)
+                extracted = list(Path("/tmp").glob("etcd-v*-linux-amd64"))
+                if extracted:
+                    d = extracted[0]
+                    for name in ["etcd", "etcdctl"]:
+                        exe = d / name
+                        if exe.exists():
+                            self._run_cmd(["cp", str(exe), "/usr/local/bin/"])
+                            self._run_cmd(["chmod", "755", f"/usr/local/bin/{name}"])
+                    shutil.rmtree(str(d), ignore_errors=True)
+                    print(Colors.success("etcd 3.5.x binaries installed to /usr/local/bin"))
+                break
+            except Exception as e:
+                logger.warning("etcd tarball install failed: %s", e)
+                print(Colors.warn(f"etcd install failed: {e}. Place etcd-v3.5.15-linux-amd64.tar.gz in rpms/ and retry."))
+            break
+        else:
+            print(Colors.warn("No etcd 3.5.x tarball found in rpms/ or .; using existing binary."))
+
+        # Start etcd
+        self._run_cmd(["systemctl", "daemon-reload"], check=False)
+        result = self._run_cmd(["systemctl", "start", "etcd"], check=False)
+        if result.returncode != 0:
+            print(Colors.fail("etcd failed to start. Check: systemctl status etcd -l ; journalctl -u etcd -n 50"))
+            return
+        print(Colors.success("etcd started."))
+
+        # Wait and check v2 API
+        time.sleep(2)
+        try:
+            r = subprocess.run(
+                ["curl", "-s", "http://127.0.0.1:2379/v2/machines"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            out = (r.stdout or "").strip()
+            if out and "404" not in out:
+                print(Colors.success(f"v2 API available: {out}"))
+            else:
+                print(Colors.warn(f"/v2/machines returned: {out or 'empty'}. Patroni may need etcd 3.5.x with v2."))
+        except Exception as e:
+            logger.warning("Could not check /v2/machines: %s", e)
+
+        print(Colors.info("Next: repeat on all 3 nodes if needed, then systemctl restart patroni on each; patronictl -c /etc/patroni/patroni.yml list"))
 
     def install_postgresql17(self) -> None:
         """Install and initialize PostgreSQL 17."""
@@ -1103,6 +1236,14 @@ postgresql:
                 os.chmod(cfg_path, 0o600)
             except OSError as e:
                 logger.warning("Could not restrict patroni.yml permissions: %s", e)
+            # Own the config file by the user that runs Patroni (postgres or intellidb)
+            # so the service can read it when started by systemd as that user.
+            try:
+                import pwd
+                pw = pwd.getpwnam(superuser_name)
+                os.chown(cfg_path, pw.pw_uid, pw.pw_gid)
+            except (ImportError, KeyError, OSError) as e:
+                logger.warning("Could not chown patroni.yml to %s: %s", superuser_name, e)
         print(Colors.success(f"Patroni config written to {cfg_path}"))
         print(Colors.warn("Review pg_hba CIDR - 0.0.0.0/0 is permissive. Restrict in production."))
 
@@ -1419,12 +1560,13 @@ backend pg_write
             print("  15. Uninstall HA Stack")
             print("  16. Security Hardening (Info)")
             print("  17. Enable TLS (Self-Signed Certs)")
-            print("  18. Exit")
+            print("  18. Fix etcd for Patroni (3.5.x + reset data)")
+            print("  19. Exit")
             print()
             try:
-                choice = input("Select option [1-18]: ").strip()
+                choice = input("Select option [1-19]: ").strip()
             except EOFError:
-                choice = "18"
+                choice = "19"
 
             if choice == "1":
                 self._run_safe("Validate System Requirements", self.validate_system_requirements)
@@ -1461,6 +1603,8 @@ backend pg_write
             elif choice == "17":
                 self._run_safe("Enable TLS (Self-Signed Certs)", self.enable_tls_self_signed)
             elif choice == "18":
+                self._run_safe("Fix etcd for Patroni (3.5.x + reset data)", self.fix_etcd_for_patroni)
+            elif choice == "19":
                 print("Exiting.")
                 break
             else:

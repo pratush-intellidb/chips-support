@@ -178,7 +178,8 @@ Manual steps: **`rpms/README-OFFLINE.md`**.
 | 15 | Uninstall HA Stack |
 | 16 | Security Hardening (Info) |
 | 17 | Enable TLS (Self-Signed Certs) |
-| 18 | Exit |
+| 18 | Fix etcd for Patroni (3.5.x + reset data) |
+| 19 | Exit |
 
 ---
 
