@@ -27,9 +27,9 @@ dnf -y download \
   haproxy firewalld \
   python3-psycopg2 python3-pyyaml
 
-echo "=== Downloading etcd (not in EPEL for EL9) ==="
-curl -sL -o etcd-v3.6.8-linux-amd64.tar.gz \
-  https://github.com/etcd-io/etcd/releases/download/v3.6.8/etcd-v3.6.8-linux-amd64.tar.gz
+echo "=== Downloading etcd 3.5.x (not in EPEL for EL9; 3.5 has v2 API required by Patroni) ==="
+curl -sL -o etcd-v3.5.15-linux-amd64.tar.gz \
+  https://github.com/etcd-io/etcd/releases/download/v3.5.15/etcd-v3.5.15-linux-amd64.tar.gz
 
 echo "=== Downloading Patroni and deps (wheels; not in EPEL for EL9) ==="
 dnf -y install python3-pip 2>/dev/null || true
