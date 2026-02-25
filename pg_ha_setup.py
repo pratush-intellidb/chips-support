@@ -310,6 +310,15 @@ class FirewallManager:
         self.config = config
         self.dry_run = dry_run or config.dry_run
 
+    def _db_port(self) -> int:
+        """Return database port (5432 for standard PostgreSQL, or IntelliDB port when enabled)."""
+        try:
+            if getattr(self.config, "use_intellidb", False):
+                return int(getattr(self.config, "intellidb_port", 5555))
+        except Exception:
+            pass
+        return 5432
+
     def _run_firewall_cmd(self, *args: str) -> tuple[bool, str]:
         """Execute firewall-cmd."""
         cmd = ["firewall-cmd"] + list(args)
@@ -375,7 +384,8 @@ class FirewallManager:
 
     def open_required_ports(self) -> bool:
         """Open all required HA stack ports."""
-        required = [5432, 8008, 2379, 2380, self.config.haproxy_port]
+        db_port = self._db_port()
+        required = [db_port, 8008, 2379, 2380, self.config.haproxy_port]
         if self.config.read_replica_port and self.config.read_replica_port != 5432:
             required.append(self.config.read_replica_port)
         required = list(dict.fromkeys(required))
@@ -395,7 +405,7 @@ class FirewallManager:
     def verify_ports_open(self, ports: Optional[list[int]] = None) -> dict[int, bool]:
         """Verify which ports are in permanent firewall rules."""
         if ports is None:
-            ports = [5432, 8008, 2379, 2380, self.config.haproxy_port]
+            ports = [self._db_port(), 8008, 2379, 2380, self.config.haproxy_port]
         permanent = set(self.get_permanent_ports())
         return {p: p in permanent for p in ports}
 
@@ -446,6 +456,15 @@ class PGHASetup:
             self._load_yaml_config(config_file)
         self.firewall = FirewallManager(self.config)
         self.port_validator = PortValidator()
+
+    def _db_port(self) -> int:
+        """Return effective PostgreSQL port (5432 or IntelliDB 5555)."""
+        try:
+            if getattr(self.config, "use_intellidb", False):
+                return int(getattr(self.config, "intellidb_port", 5555))
+        except Exception:
+            pass
+        return 5432
 
     def _load_yaml_config(self, path: str) -> None:
         """Load configuration from YAML file."""
@@ -589,7 +608,7 @@ class PGHASetup:
         """Display port purpose, exposure, and security for each port."""
         print(Colors.header("Port Documentation"))
         print("-" * 70)
-        ports_to_show = [5432, 8008, 2379, 2380, 5000]
+        ports_to_show = [self._db_port(), 8008, 2379, 2380, 5000]
         if self.config.haproxy_port != 5000:
             ports_to_show[4] = self.config.haproxy_port
         ports_to_show.append(self.config.read_replica_port)
@@ -616,7 +635,8 @@ class PGHASetup:
             print(Colors.fail("firewalld is not running."))
             print("Start with: systemctl start firewalld && systemctl enable firewalld")
             return
-        ports = [5432, 8008, 2379, 2380, self.config.haproxy_port]
+        db_port = self._db_port()
+        ports = [db_port, 8008, 2379, 2380, self.config.haproxy_port]
         if self.config.read_replica_port and self.config.read_replica_port not in ports:
             ports.append(self.config.read_replica_port)
         print(f"Opening ports: {ports}")
@@ -627,7 +647,7 @@ class PGHASetup:
 
     def _verify_ports_interactive(self) -> None:
         """Verify which ports are open."""
-        ports = [5432, 8008, 2379, 2380, self.config.haproxy_port]
+        ports = [self._db_port(), 8008, 2379, 2380, self.config.haproxy_port]
         result = self.firewall.verify_ports_open(ports)
         print()
         for port, open_ in result.items():
@@ -650,7 +670,7 @@ class PGHASetup:
 
     def _check_ports_in_use(self) -> None:
         """Check if required ports are in use."""
-        ports = [5432, 8008, 2379, 2380, self.config.haproxy_port]
+        ports = [self._db_port(), 8008, 2379, 2380, self.config.haproxy_port]
         print()
         for port in ports:
             conflict, msg = self.port_validator.check_port_conflict(port)
@@ -674,7 +694,12 @@ class PGHASetup:
         print(Colors.header("Validate Connectivity Between Nodes"))
         print("-" * 50)
         nodes = list(zip(self.config.etcd_nodes, self.config.etcd_ips))
-        ports_to_check = [(2379, "etcd client"), (2380, "etcd peer"), (5432, "PostgreSQL"), (8008, "Patroni REST")]
+        ports_to_check = [
+            (2379, "etcd client"),
+            (2380, "etcd peer"),
+            (self._db_port(), "PostgreSQL / IntelliDB"),
+            (8008, "Patroni REST"),
+        ]
         for node_name, ip in nodes:
             print(f"\nFrom this host to {node_name} ({ip}):")
             for port, desc in ports_to_check:
@@ -726,7 +751,7 @@ Firewall: Use --add-source for restricted access
 
         # Port conflicts
         ports_ok = True
-        for port in [5432, 8008, 2379, 2380, self.config.haproxy_port]:
+        for port in [self._db_port(), 8008, 2379, 2380, self.config.haproxy_port]:
             conflict, _ = self.port_validator.check_port_conflict(port)
             if conflict:
                 ports_ok = False
@@ -734,8 +759,9 @@ Firewall: Use --add-source for restricted access
         checks.append(("No port conflicts", ports_ok))
 
         # Security: PostgreSQL on all interfaces
-        if self.port_validator.is_listening_on_all_interfaces(5432):
-            print(Colors.warn("  PostgreSQL (5432) listening on 0.0.0.0 - consider binding to private IP"))
+        db_port = self._db_port()
+        if self.port_validator.is_listening_on_all_interfaces(db_port):
+            print(Colors.warn(f"  PostgreSQL ({db_port}) listening on 0.0.0.0 - consider binding to private IP"))
 
         # Python
         checks.append(("Python 3", sys.version_info >= (3, 6)))
@@ -814,6 +840,9 @@ Firewall: Use --add-source for restricted access
                     extracted = list(Path("/tmp").glob("etcd-v*-linux-amd64"))
                     if extracted:
                         d = extracted[0]
+                        bin_dir_path = Path("/usr/local/bin")
+                        if not bin_dir_path.exists():
+                            os.makedirs(bin_dir_path, exist_ok=True)
                         for name in ["etcd", "etcdctl"]:
                             exe = d / name
                             if exe.exists():
@@ -903,10 +932,25 @@ EnvironmentFile={env_file}
                 override_file = f"{override_dir}/environment.conf"
                 with open(override_file, "w") as f:
                     f.write(override_content)
-            self._run_cmd(["systemctl", "daemon-reload"])
-            self._run_cmd(["systemctl", "enable", "etcd"])
-            self._run_cmd(["systemctl", "start", "etcd"])
-        print(Colors.success("etcd configured. Start on all 3 nodes with same initial-cluster."))
+            # Reload and manage etcd service; handle failures gracefully
+            self._run_cmd(["systemctl", "daemon-reload"], check=False)
+            self._run_cmd(["systemctl", "enable", "etcd"], check=False)
+            result = self._run_cmd(["systemctl", "start", "etcd"], check=False)
+            if result.returncode != 0:
+                print(Colors.fail("Failed to start etcd service (systemctl start etcd)."))
+                if result.stderr:
+                    print(result.stderr.strip())
+                print(
+                    Colors.warn(
+                        "Check etcd status with:\n"
+                        "  systemctl status etcd -l\n"
+                        "  journalctl -u etcd -n 50"
+                    )
+                )
+            else:
+                print(Colors.success("etcd configured and service started. Repeat on all 3 nodes."))
+        else:
+            print(Colors.success("etcd configuration written (dry-run)."))
 
     def install_postgresql17(self) -> None:
         """Install and initialize PostgreSQL 17."""
@@ -915,6 +959,8 @@ EnvironmentFile={env_file}
         print(Colors.header("\n=== Installing PostgreSQL 17 ===\n"))
         self._run_cmd(["dnf", "install", "-y", "postgresql17-server", "postgresql17-contrib"], timeout=120)
         os.makedirs(POSTGRESQL_DATA_DIR, exist_ok=True)
+        # Ensure data directory is owned by postgres so Patroni / postgres can write to it
+        self._run_cmd(["chown", "-R", "postgres:postgres", POSTGRESQL_DATA_DIR], check=False)
         # Patroni will initialize; we don't run postgresql-17-setup
         print(Colors.success("PostgreSQL 17 packages installed."))
 
