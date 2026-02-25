@@ -884,12 +884,17 @@ Firewall: Use --add-source for restricted access
             for n, ip in zip(self.config.etcd_nodes, self.config.etcd_ips)
         )
 
+        # etcd environment for Patroni DCS on this node.
+        # Per customer requirement we set BOTH the initial and runtime advertise URLs,
+        # all derived from current_node_ip (no hard-coded IPs).
         etcd_env = f"""# etcd for Patroni DCS
 ETCD_NAME={self.config.current_node}
 ETCD_DATA_DIR="/var/lib/etcd"
 ETCD_LISTEN_CLIENT_URLS="http://{self.config.current_node_ip}:2379"
 ETCD_LISTEN_PEER_URLS="http://{self.config.current_node_ip}:2380"
 ETCD_INITIAL_ADVERTISE_CLIENT_URLS="http://{self.config.current_node_ip}:2379"
+ETCD_INITIAL_ADVERTISE_PEER_URLS="http://{self.config.current_node_ip}:2380"
+ETCD_ADVERTISE_CLIENT_URLS="http://{self.config.current_node_ip}:2379"
 ETCD_INITIAL_CLUSTER="{initial_cluster}"
 ETCD_INITIAL_CLUSTER_TOKEN="pg-ha-etcd"
 ETCD_INITIAL_CLUSTER_STATE="new"
@@ -1145,6 +1150,14 @@ backend pg_write
 """
 
         if not self.config.dry_run:
+            haproxy_dir = os.path.dirname(HAPROXY_CONFIG)
+            try:
+                os.makedirs(haproxy_dir, exist_ok=True)
+            except OSError as e:
+                print(Colors.fail(f"Failed to create HAProxy config directory {haproxy_dir}: {e}"))
+                logger.error("Failed to create HAProxy config directory %s: %s", haproxy_dir, e)
+                return
+
             with open(HAPROXY_CONFIG, "w") as f:
                 f.write(haproxy_cfg)
             # Validate config before reload to avoid taking down HAProxy
@@ -1358,6 +1371,17 @@ backend pg_write
         print(f"  ssl_cert_file = '{cert_file}'")
         print(f"  ssl_key_file = '{key_file}'")
 
+    def _run_safe(self, label: str, func: Callable[[], None]) -> None:
+        """Run a menu action and handle unexpected errors gracefully."""
+        try:
+            func()
+        except KeyboardInterrupt:
+            # Let CTRL+C bubble out to the main handler
+            raise
+        except Exception as exc:
+            print(Colors.fail(f"{label} failed: {exc}"))
+            logger.exception("%s failed", label)
+
     def run_menu(self) -> None:
         """Main menu loop."""
         if not self._require_root():
@@ -1394,39 +1418,39 @@ backend pg_write
                 choice = "18"
 
             if choice == "1":
-                self.validate_system_requirements()
+                self._run_safe("Validate System Requirements", self.validate_system_requirements)
             elif choice == "2":
-                self.show_ports_and_firewall_menu()
+                self._run_safe("Show Required Ports & Open Firewall Ports", self.show_ports_and_firewall_menu)
             elif choice == "3":
-                self.install_packages()
+                self._run_safe("Install Required Packages", self.install_packages)
             elif choice == "4":
-                self.configure_etcd()
+                self._run_safe("Configure etcd Cluster", self.configure_etcd)
             elif choice == "5":
-                self.install_postgresql17()
+                self._run_safe("Install PostgreSQL 17", self.install_postgresql17)
             elif choice == "6":
-                self.configure_replication()
+                self._run_safe("Configure PostgreSQL Replication", self.configure_replication)
             elif choice == "7":
-                self.configure_patroni()
+                self._run_safe("Install & Configure Patroni", self.configure_patroni)
             elif choice == "8":
-                self.configure_haproxy()
+                self._run_safe("Configure HAProxy", self.configure_haproxy)
             elif choice == "9":
-                self.configure_selinux()
+                self._run_safe("Configure SELinux Policies", self.configure_selinux)
             elif choice == "10":
-                self.initialize_cluster()
+                self._run_safe("Initialize Cluster", self.initialize_cluster)
             elif choice == "11":
-                self.check_cluster_health()
+                self._run_safe("Check Cluster Health", self.check_cluster_health)
             elif choice == "12":
-                self.simulate_failover()
+                self._run_safe("Simulate Failover", self.simulate_failover)
             elif choice == "13":
-                self.backup_pg_basebackup()
+                self._run_safe("Backup Using pg_basebackup", self.backup_pg_basebackup)
             elif choice == "14":
-                self.full_automated_setup()
+                self._run_safe("Full Automated Setup", self.full_automated_setup)
             elif choice == "15":
-                self.uninstall_ha_stack()
+                self._run_safe("Uninstall HA Stack", self.uninstall_ha_stack)
             elif choice == "16":
-                self.security_hardening_menu()
+                self._run_safe("Security Hardening (Info)", self.security_hardening_menu)
             elif choice == "17":
-                self.enable_tls_self_signed()
+                self._run_safe("Enable TLS (Self-Signed Certs)", self.enable_tls_self_signed)
             elif choice == "18":
                 print("Exiting.")
                 break
