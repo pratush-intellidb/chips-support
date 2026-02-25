@@ -55,6 +55,15 @@ If `Configure etcd` finishes but `systemctl status etcd` shows FAILED:
      # then rerun Configure etcd, then start etcd
      ```
 
+4. **Patroni fails with `ValueError: Invalid IPv6 URL` or `curl .../v2/machines` returns 404**:
+   - etcd **3.6+** removed the v2 API; Patroni’s `etcd` DCS driver requires it.
+   - **Fix:** Install etcd **3.5.x** on all nodes. Use the provided script (run from project directory):
+     ```bash
+     sudo bash scripts/fix-etcd-v2-for-patroni.sh
+     ```
+     Or pass a local tarball: `sudo bash scripts/fix-etcd-v2-for-patroni.sh ./rpms/etcd-v3.5.15-linux-amd64.tar.gz`
+   - Then restart Patroni on each node: `systemctl restart patroni`.
+
 ---
 
 ### 3. HAProxy issues
@@ -130,6 +139,21 @@ If cluster doesn’t come up or `Check Cluster Health` fails:
    ```
 
    - If this fails, note the error (e.g. etcd not reachable, no leader, auth error).
+
+4. **`patroni: error: unrecognized arguments: -c`** (systemd):
+
+   The **patroni** daemon takes the config file as a **positional** argument, not `-c`. The `-c` flag is only for **patronictl**.
+
+   - Wrong: `ExecStart=/usr/local/bin/patroni -c /etc/patroni/patroni.yml`
+   - Correct: `ExecStart=/usr/local/bin/patroni /etc/patroni/patroni.yml`
+
+   Edit the unit and reload:
+
+   ```bash
+   sudo sed -i 's|patroni -c /etc/patroni/patroni.yml|patroni /etc/patroni/patroni.yml|' /etc/systemd/system/patroni.service
+   sudo systemctl daemon-reload
+   sudo systemctl restart patroni
+   ```
 
 ---
 
