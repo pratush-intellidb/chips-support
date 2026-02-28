@@ -532,6 +532,21 @@ class PGHASetup:
             logger.error("Could not read os-release: %s", e)
             return False
 
+    def _pkg_manager(self) -> str:
+        """Return package manager command: 'dnf' if available, else 'yum' (for customer sites where dnf is not working)."""
+        try:
+            r = subprocess.run(
+                ["dnf", "--version"],
+                capture_output=True,
+                text=True,
+                timeout=5,
+            )
+            if r.returncode == 0:
+                return "dnf"
+        except (FileNotFoundError, subprocess.TimeoutExpired):
+            pass
+        return "yum"
+
     def _run_cmd(
         self,
         cmd: list[str],
@@ -795,8 +810,9 @@ Firewall: Use --add-source for restricted access
             print(Colors.info("Installing local RPMs from current directory and ./rpms/:"))
             for f in rpm_files:
                 print(f"  - {f}")
+            pkg = self._pkg_manager()
             try:
-                self._run_cmd(["dnf", "install", "-y"] + rpm_files, timeout=300, check=False)
+                self._run_cmd([pkg, "install", "-y"] + rpm_files, timeout=300, check=False)
             except Exception as e:
                 print(Colors.warn(f"Local RPM install failed (continuing to repo-based install): {e}"))
 
@@ -816,7 +832,8 @@ Firewall: Use --add-source for restricted access
             packages.append("etcd")
         if not have_patroni_wheels:
             packages.append("patroni")
-        cmd = ["dnf", "install", "-y"] + packages
+        pkg = self._pkg_manager()
+        cmd = [pkg, "install", "-y"] + packages
         try:
             self._run_cmd(cmd, timeout=300)
             print(Colors.success("Packages installed."))
@@ -1095,7 +1112,8 @@ EnvironmentFile={env_file}
         if not self._require_root():
             return
         print(Colors.header("\n=== Installing PostgreSQL 17 ===\n"))
-        self._run_cmd(["dnf", "install", "-y", "postgresql17-server", "postgresql17-contrib"], timeout=120)
+        pkg = self._pkg_manager()
+        self._run_cmd([pkg, "install", "-y", "postgresql17-server", "postgresql17-contrib"], timeout=120)
         os.makedirs(POSTGRESQL_DATA_DIR, exist_ok=True)
         # Ensure data directory is owned by postgres so Patroni / postgres can write to it
         self._run_cmd(["chown", "-R", "postgres:postgres", POSTGRESQL_DATA_DIR], check=False)
@@ -1244,6 +1262,33 @@ postgresql:
                 os.chown(cfg_path, pw.pw_uid, pw.pw_gid)
             except (ImportError, KeyError, OSError) as e:
                 logger.warning("Could not chown patroni.yml to %s: %s", superuser_name, e)
+
+            # Create patroni.service if missing (runs as IntelliDB user or postgres)
+            patroni_unit = "/etc/systemd/system/patroni.service"
+            patroni_bin = shutil.which("patroni") or "/usr/local/bin/patroni"
+            if not os.path.exists(patroni_unit) and not self.config.dry_run:
+                unit_content = f"""[Unit]
+Description=Patroni PostgreSQL HA Cluster Manager
+After=network.target etcd.service
+
+[Service]
+Type=simple
+ExecStart={patroni_bin} -c {cfg_path}
+Restart=on-failure
+RestartSec=10s
+User={superuser_name}
+Group={superuser_name}
+TimeoutSec=30
+
+[Install]
+WantedBy=multi-user.target
+"""
+                with open(patroni_unit, "w") as f:
+                    f.write(unit_content)
+                logger.info("Created %s (User=%s)", patroni_unit, superuser_name)
+                self._run_cmd(["systemctl", "daemon-reload"], check=False)
+                self._run_cmd(["systemctl", "enable", "patroni"], check=False)
+                print(Colors.success(f"Patroni systemd unit created at {patroni_unit} (User={superuser_name})."))
         print(Colors.success(f"Patroni config written to {cfg_path}"))
         print(Colors.warn("Review pg_hba CIDR - 0.0.0.0/0 is permissive. Restrict in production."))
 
@@ -1466,7 +1511,8 @@ backend pg_write
         for svc in ["patroni", "haproxy", "etcd"]:
             self._run_cmd(["systemctl", "stop", svc], check=False)
             self._run_cmd(["systemctl", "disable", svc], check=False)
-        self._run_cmd(["dnf", "remove", "-y", "patroni", "etcd", "haproxy", "postgresql17-server"], check=False, timeout=120)
+        pkg = self._pkg_manager()
+        self._run_cmd([pkg, "remove", "-y", "patroni", "etcd", "haproxy", "postgresql17-server"], check=False, timeout=120)
         print(Colors.warn("Data in /var/lib/pgsql and /var/lib/etcd preserved. Remove manually if needed."))
 
     def security_hardening_menu(self) -> None:

@@ -183,6 +183,17 @@ Manual steps: **`rpms/README-OFFLINE.md`**.
 
 ---
 
+## Additional documentation
+
+- **`docs/HANDOVER-REPORT.md`** – Handover report: work done, current status, next steps (for team continuity)
+- **`docs/troubleshooting-steps.md`** – Step-by-step troubleshooting (etcd, Patroni, HAProxy)
+- **`docs/next-steps.md`** – Post-setup fixes after ha-cluster-fix-and-validate.sh
+- **`docs/validation-steps.md`** – Validation checklist
+- **`docs/final-outcome-script.md`** – What gets configured
+- **`scripts/README.md`** – Fix scripts usage
+
+---
+
 ## Logging and Troubleshooting
 
 - **Log file:** `/var/log/pg_ha_setup.log`
