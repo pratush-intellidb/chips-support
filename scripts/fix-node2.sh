@@ -10,13 +10,20 @@ set -e
 
 echo "[INFO] === Node2 fix ==="
 
-# 1. Enable etcd v2 API (no quotes - "true" causes 404)
+# 1. etcd config: v2 API + advertise-client-urls (required by etcd 3.5+)
 if ! grep -q 'ETCD_ENABLE_V2' /etc/etcd/etcd.conf 2>/dev/null; then
   echo 'ETCD_ENABLE_V2=true' >> /etc/etcd/etcd.conf
   echo "[INFO] Added ETCD_ENABLE_V2=true to etcd.conf"
 else
   sed -i 's/ETCD_ENABLE_V2="true"/ETCD_ENABLE_V2=true/' /etc/etcd/etcd.conf 2>/dev/null || true
 fi
+# etcd 3.5+ requires ETCD_ADVERTISE_CLIENT_URLS (ETCD_INITIAL_ADVERTISE_CLIENT_URLS is unrecognized)
+if ! grep -q 'ETCD_ADVERTISE_CLIENT_URLS' /etc/etcd/etcd.conf 2>/dev/null; then
+  echo 'ETCD_ADVERTISE_CLIENT_URLS="http://172.16.15.37:2379"' >> /etc/etcd/etcd.conf
+  echo "[INFO] Added ETCD_ADVERTISE_CLIENT_URLS to etcd.conf"
+fi
+# Remove brackets around IPv4 in etcd URLs (causes Patroni "Invalid IPv6 URL")
+sed -i 's/\[\([0-9][0-9.]*\)\]/\1/g' /etc/etcd/etcd.conf 2>/dev/null || true
 systemctl restart etcd 2>/dev/null || { echo "[WARN] etcd restart failed"; }
 sleep 2
 
@@ -27,6 +34,8 @@ if [[ -f /etc/systemd/system/patroni.service ]]; then
   sed -i 's/^Group=postgres$/Group=intellidb/' /etc/systemd/system/patroni.service 2>/dev/null || true
   echo "[INFO] Fixed patroni.service"
 fi
+# Fix etcd hosts: no brackets around IPv4 (causes Patroni "Invalid IPv6 URL")
+[[ -f /etc/patroni/patroni.yml ]] && sed -i 's/\[\([0-9][0-9.]*\)\]/\1/g' /etc/patroni/patroni.yml 2>/dev/null || true
 chown intellidb:intellidb /etc/patroni/patroni.yml 2>/dev/null || true
 systemctl daemon-reload
 

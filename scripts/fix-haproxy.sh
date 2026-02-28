@@ -20,8 +20,8 @@ else
   echo "[FAIL] 'haproxy' command not found in PATH."
   echo "       Likely the haproxy package is not installed on this node."
   echo
-  echo "Suggested fix:"
-  echo "  dnf install -y haproxy"
+  echo "Suggested fix (use yum if dnf is not available at customer site):"
+  echo "  dnf install -y haproxy   # or: yum install -y haproxy"
   echo
   echo "After installing, re-run menu option 3 (Install Required Packages) if needed,"
   echo "then menu option 8 (Configure HAProxy) in pg_ha_setup.py."

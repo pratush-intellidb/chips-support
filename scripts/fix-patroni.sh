@@ -24,8 +24,8 @@ else
   echo
   echo "This usually means Patroni is not installed on this node."
   echo "Suggested installation options:"
-  echo "  - If using system packages:"
-  echo "      dnf install -y patroni"
+  echo "  - If using system packages (use yum if dnf is not available at customer site):"
+  echo "      dnf install -y patroni   # or: yum install -y patroni"
   echo "  - If using wheels from ./rpms/patroni-wheels (offline):"
   echo "      pip3 install --no-index --find-links=./rpms/patroni-wheels patroni"
   echo
@@ -54,18 +54,20 @@ if systemctl list-unit-files | grep -q '^patroni\.service'; then
 else
   echo "[WARN] patroni.service unit file not found in systemd."
   echo
-  echo "You can create a basic systemd unit like this (adjust ExecStart if needed):"
+  echo "You can create a basic systemd unit like this (adjust ExecStart and User if needed):"
+  echo "  For IntelliDB Enterprise: use User=intellidb Group=intellidb"
   cat <<'UNIT'
 /etc/systemd/system/patroni.service
 ----------------------------------
 [Unit]
 Description=Patroni PostgreSQL HA Cluster Manager
-After=network.target
+After=network.target etcd.service
 
 [Service]
 Type=simple
 ExecStart=/usr/local/bin/patroni -c /etc/patroni/patroni.yml
 Restart=on-failure
+RestartSec=10s
 User=postgres
 Group=postgres
 
@@ -75,6 +77,7 @@ UNIT
   echo
   echo "If patroni is installed somewhere else, replace /usr/local/bin/patroni"
   echo "with the actual path shown earlier (${PATRONI_BIN})."
+  echo "Or run: sudo bash scripts/ha-cluster-fix-and-validate.sh config.yaml  to auto-create the unit."
   echo
   echo "After creating the file above, run:"
   echo "  systemctl daemon-reload"
