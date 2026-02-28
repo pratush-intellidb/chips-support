@@ -56,8 +56,17 @@ If `Configure etcd` finishes but `systemctl status etcd` shows FAILED:
      ```
 
 4. **Patroni fails with `ValueError: Invalid IPv6 URL` or `curl .../v2/machines` returns 404**:
+   - **Invalid IPv6 URL** is caused by IPv4 in brackets (e.g. `http://[172.16.15.36]:2379`). Python treats bracketed hosts as IPv6; IPv4 in brackets is invalid.
    - etcd **3.6+** removed the v2 API; Patroni’s `etcd` DCS driver requires it.
-   - **Fix:** Install etcd **3.5.x** on all nodes. Use the provided script (run from project directory):
+   - **Fix for Invalid IPv6 URL:** Remove brackets around IPv4 in etcd.conf and patroni.yml (e.g. `[172.16.15.36]` -> `172.16.15.36`):
+     ```bash
+     sudo sed -i 's/\[\([0-9][0-9.]*\)\]/\1/g' /etc/etcd/etcd.conf
+     sudo sed -i 's/\[\([0-9][0-9.]*\)\]/\1/g' /etc/patroni/patroni.yml
+     sudo systemctl restart etcd
+     sudo systemctl restart patroni
+     ```
+     Or run `fix-node1.sh`, `fix-node2.sh`, `fix-node3.sh` on the respective nodes.
+   - **Fix for 404:** Install etcd **3.5.x** on all nodes:
      ```bash
      sudo bash scripts/fix-etcd-v2-for-patroni.sh
      ```
