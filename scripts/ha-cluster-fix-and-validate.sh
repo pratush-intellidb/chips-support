@@ -19,7 +19,7 @@
 #     sudo bash ha-cluster-fix-and-validate.sh NODE_NAME NODE_IP "IP1,IP2,IP3" [--haproxy]
 #     Example: sudo bash ha-cluster-fix-and-validate.sh node1 172.16.15.36 "172.16.15.36,172.16.15.37,172.16.15.38" --haproxy
 #
-set -euo pipefail
+set -eu
 
 # -----------------------------------------------------------------------------
 # Helpers
@@ -202,12 +202,23 @@ else
   log "Patroni config found: $PATRONI_CFG"
 fi
 
-# Create patroni.service if missing (User=intellidb for IntelliDB)
+# Create or fix patroni.service (User=intellidb for IntelliDB; ExecStart must use -c)
+PATRONI_BIN="${PATRONI_BIN:-/usr/local/bin/patroni}"
+RUN_AS="$INTELLIDB_USER"
+[[ "$USE_INTELLIDB" != "true" ]] && RUN_AS="postgres"
+
+need_unit_write="false"
 if [[ ! -f "$PATRONI_UNIT" ]]; then
+  need_unit_write="true"
   log "Creating $PATRONI_UNIT ..."
-  PATRONI_BIN="${PATRONI_BIN:-/usr/local/bin/patroni}"
-  RUN_AS="$INTELLIDB_USER"
-  [[ "$USE_INTELLIDB" != "true" ]] && RUN_AS="postgres"
+elif ! grep -q "ExecStart=.* -c .*patroni" "$PATRONI_UNIT" 2>/dev/null; then
+  need_unit_write="true"
+  log "Fixing $PATRONI_UNIT (ExecStart must use -c before config path)."
+else
+  log "Patroni systemd unit already exists and has -c: $PATRONI_UNIT"
+fi
+
+if [[ "$need_unit_write" == "true" ]]; then
   cat > "$PATRONI_UNIT" << EOF
 [Unit]
 Description=Patroni PostgreSQL HA Cluster Manager
@@ -225,11 +236,9 @@ TimeoutSec=30
 [Install]
 WantedBy=multi-user.target
 EOF
-  log "Created patroni.service (User=$RUN_AS)."
+  log "Wrote patroni.service (User=$RUN_AS, ExecStart with -c)."
   systemctl daemon-reload
   systemctl enable patroni 2>/dev/null || true
-else
-  log "Patroni systemd unit already exists: $PATRONI_UNIT"
 fi
 
 # Ensure config is readable by the run user
